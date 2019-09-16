@@ -26,7 +26,11 @@ The model was trained in only 24 hours on a single GPU with the [Adaptive Span T
 
 ### Setup
 
-To get started, retrieve the data with `./getdata.sh`.
+To get started:
+
+- Retrieve the data with `./getdata.sh`
+- Install PyTorch version 1.2
+- Install Nvidia's [AMP](https://github.com/NVIDIA/apex)
 
 ### Training the model
 
@@ -40,6 +44,6 @@ We then run one final training run:
 
 `python -u main.py --epochs 14 --dropouth 0.1 --dropouti 0.1 --dropout 0.1 --data data/enwik8/ --save ENWIK8.pt --log-interval 10 --nhid 2048 --seed 5512 --optimizer lamb --bptt 1024 --warmup 800 --lr 2e-3 --emsize 1024 --nhid 4096 --nlayers 4 --batch_size 8 --resume ENWIK8.pt --lr 1e-3`
 
-By dropping the learning rate from 2e-3 to 1e-3 we get validation bpcs falling 1.106, 1.104, 1.101, 1.101
+By dropping the learning rate from 2e-3 to 1e-3 we get validation bpcs falling 1.106, 1.104, 1.101, 1.101. These each run for 4400 seconds resulting in a total training time of 22 hours.
 
 The final test bpc should be 1.07.
