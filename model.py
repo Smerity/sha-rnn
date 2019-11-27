@@ -16,8 +16,6 @@ tcheckpoint = torch.utils.checkpoint.checkpoint
 #checkpoint = torch.utils.checkpoint.checkpoint
 checkpoint = lambda f, *args, **kwargs: f(*args, **kwargs)
 
-from relattn import PositionalEmbedding
-
 def attention(query, key, value, attn_mask=None, need_weights=True, dropout=None):
     # https://pytorchnlp.readthedocs.io/en/latest/_modules/torchnlp/nn/attention.html
     # Needs [batch, heads, seqlen, hid]
@@ -256,7 +254,6 @@ class SHARNN(nn.Module):
             rnn = True
             self.blocks.append(Block(embed_dim, hidden_dim, self.num_heads, dropout=dropouth, rnn=rnn, residual=False, use_attn=True if idx == num_layers - 2 else False))
 
-        #self.pos_emb = PositionalEmbedding(embed_dim)
         #self.pos_emb = nn.Parameter(torch.zeros(size=(self.num_max_positions, 1, embed_dim), dtype=torch.float))
         self.pos_emb = [0] * self.num_max_positions
         #self.position_gates = torch.nn.ParameterList([nn.Parameter(torch.zeros(size=(1, 1, embed_dim), dtype=torch.float)) for _ in range(num_layers)])
