@@ -11,7 +11,7 @@ import torch.utils.checkpoint as checkpoint
 import data
 import model
 
-from utils import batchify, get_batch, repackage_hidden
+from utils import batchify, get_batch, repackage_hidden, zero_hidden
 
 parser = argparse.ArgumentParser(description='PyTorch PennTreeBank RNN/LSTM Language Model')
 parser.add_argument('--data', type=str, default='data/penn/',
@@ -48,7 +48,7 @@ parser.add_argument('--dropouti', type=float, default=0.65,
                     help='dropout for input embedding layers (0 = no dropout)')
 parser.add_argument('--dropoute', type=float, default=0.1,
                     help='dropout to remove words from embedding layer (0 = no dropout)')
-parser.add_argument('--wdrop', type=float, default=0.5,
+parser.add_argument('--wdrop', type=float, default=0.0,
                     help='amount of weight dropout to apply to the RNN hidden to hidden matrix')
 parser.add_argument('--seed', type=int, default=1111,
                     help='random seed')
@@ -101,7 +101,13 @@ def model_load(fn):
         #model, criterion, optimizer = torch.load(f)
         #model, criterion = torch.load(f)
         m, criterion = torch.load(f)
-        model.load_state_dict(m.state_dict(), strict=False)
+        d = m.state_dict()
+        #del d['pos_emb']
+        model.load_state_dict(d, strict=False)
+        if False:
+            for block in model.blocks:
+                print(block.attn)
+                if block.attn: block.attn.vq_collapse()
         del m
 
 import os
@@ -117,7 +123,7 @@ else:
 
 eval_batch_size = min(100, args.batch_size)
 print('Eval batch size of', eval_batch_size)
-test_batch_size = 10
+test_batch_size = 8
 train_data = batchify(corpus.train, args.batch_size, args)
 val_data = batchify(corpus.valid, eval_batch_size, args)
 test_data = batchify(corpus.test, test_batch_size, args)
@@ -133,13 +139,13 @@ ntokens = len(corpus.dictionary)
 print('Total number of tokens:', ntokens)
 #model = model.RNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
 #model = model.BoomRNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
-model = model.Transformer(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
+model = model.SHARNN(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
 #model = model.AttnRNNModel(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
 #model = model.RecAttn(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
 #model = model.LNRNN(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
 #model = model.LNRR(args.model, ntokens, args.emsize, args.nhid, args.nlayers, args.dropout, args.dropouth, args.dropouti, args.dropoute, args.wdrop, args.tied)
 ###
-if args.resume:
+if args.resume and args.epochs > 0:
     print('Resuming model ...')
     model_load(args.resume)
     #optimizer.param_groups[0]['lr'] = args.lr
@@ -194,7 +200,7 @@ def evaluate(data_source, batch_size=10):
             data, targets = get_batch(data_source, i, args, evaluation=True)
             #output, hidden = model(data, hidden)
             output, hidden, mems = model(data, hidden, mems=mems, return_h=False)
-            total_loss += len(data) * criterion(model.decoder.weight, model.decoder.bias, output, targets).data
+            total_loss += len(data) * criterion(model.decoder.weight, model.decoder.bias, output, targets.view(-1)).data
             if hidden is not None:
                 hidden = repackage_hidden(hidden)
     return total_loss.item() / len(data_source)
@@ -241,12 +247,36 @@ def train(epoch=0):
         # If we didn't, the model would try backpropagating all the way to start of the dataset.
         #optimizer.zero_grad()
 
+        if args.wdrop:
+            rnn_hh_weights = []
+            rnn_hh_masks = []
+            for b in model.blocks:
+                # Create a mask with wdrop entries as zeros
+                m = ((1 - args.wdrop) * torch.ones(b.rnn.weight_hh_l0.shape, device=b.rnn.weight_hh_l0.device)).bernoulli()
+                rnn_hh_masks.append(m)
+                # Knock out all of those weights
+                wd = m * b.rnn.weight_hh_l0.data
+                # Save the original weights
+                rnn_hh_weights.append(b.rnn.weight_hh_l0.data)
+                # Replace the weight to be used and scale it up
+                b.rnn.weight_hh_l0.data = wd / (1 - args.wdrop)
+                b.rnn.flatten_parameters()
+
         #output, hidden, rnn_hs, dropped_rnn_hs = model(data, hidden, return_h=True)
         #output, hidden, mems, attn_outs, _ = model(data, hidden, return_h=True, mems=mems)
         output, hidden, mems, attn_outs, _ = model(data, hidden, return_h=True, mems=mems)
-        raw_loss = criterion(model.decoder.weight, model.decoder.bias, output, targets)
+        raw_loss = criterion(model.decoder.weight, model.decoder.bias, output, targets.view(-1))
 
         losses.append(raw_loss)
+
+        if False and mems:
+            mem_loss = sum(args.alpha * m.pow(2).mean() for m in mems)
+            losses.append(mem_loss)
+
+        #print(output.shape, targets.shape)
+        #next_targets = targets.view(len(output), -1)[1:].view(-1)
+        #print(output[:-1].shape, next_targets.shape)
+        #next_token_loss = 0.1 * criterion(model.decoder.weight, model.decoder.bias, output[:-1], next_targets)
         # Activiation Regularization
         #if args.alpha: loss = loss + sum(args.alpha * dropped_rnn_h.pow(2).mean() for dropped_rnn_h in dropped_rnn_hs[-1:])
         # Temporal Activation Regularization (slowness)
@@ -275,15 +305,26 @@ def train(epoch=0):
             if args.clip: torch.nn.utils.clip_grad_norm_(params, args.clip)
             optimizer.step()
             if hidden is not None:
-                if np.random.random() > 0.975:
-                    hidden = None
+                #if np.random.random() > 0.975:
+                #    hidden = None
+                #    #hidden = zero_hidden(hidden)
                 hidden = repackage_hidden(hidden)
             if mems is not None:
-                if np.random.random() > 0.975:
-                    mems = None
+                #if np.random.random() > 0.975:
+                #    mems = None
+                #    mems = zero_hidden(mems)
                 mems = repackage_hidden(mems)
             optimizer.zero_grad()
             losses = []
+
+        if args.wdrop:
+            for (w, m, b) in zip(rnn_hh_weights, rnn_hh_masks, model.blocks):
+                # Scale the resulting weight back down
+                b.rnn.weight_hh_l0.data = b.rnn.weight_hh_l0.data * (1 - args.wdrop)
+                # Replace the zeroed entries with their original values
+                m = m.type(torch.bool)
+                b.rnn.weight_hh_l0.data[~m] = w[~m]
+                b.rnn.flatten_parameters()
 
         total_loss += raw_loss.data
         #optimizer.param_groups[0]['lr'] = lr2
@@ -311,20 +352,21 @@ try:
     # Ensure the optimizer is optimizing params, which includes both the model's weights as well as the criterion's weight (i.e. Adaptive Softmax)
     if args.optimizer == 'sgd':
         optimizer = torch.optim.SGD(params, lr=args.lr, weight_decay=args.wdecay)
+    if args.optimizer == 'adagrad':
+        optimizer = torch.optim.Adagrad(params, lr=args.lr, weight_decay=args.wdecay)
     if args.optimizer == 'adam':
         optimizer = torch.optim.Adam(params, lr=args.lr, weight_decay=args.wdecay)
     if args.optimizer == 'adamw':
         optimizer = torch.optim.AdamW(params, lr=args.lr, weight_decay=args.wdecay)
     if args.optimizer == 'lamb':
         from pytorch_lamb import Lamb
-        #optimizer = Lamb(params, lr=args.lr, weight_decay=args.wdecay, min_trust=0.5)
         optimizer = Lamb(params, lr=args.lr, weight_decay=args.wdecay, min_trust=0.25)
-        #optimizer = Lamb(params, lr=args.lr, weight_decay=args.wdecay, min_trust=0.001)
+        #optimizer = Lamb(params, lr=args.lr, weight_decay=args.wdecay, min_trust=0.1)
         #optimizer = Lamb(params, lr=args.lr, weight_decay=args.wdecay, min_trust=0, random_min_trust=0.2, random_trust_dice=10)
         #optimizer = Lamb(params, lr=args.lr, weight_decay=args.wdecay, min_trust=0.2, random_min_trust=0.5, random_trust_dice=4)
     from lookahead import Lookahead
     if False:
-        k, alpha = 8, 0.8
+        k, alpha = 5, 0.8
         print('Lookahead - k {} and alpha {}'.format(k, alpha))
         optimizer = Lookahead(base_optimizer=optimizer, k=k, alpha=alpha)
 
@@ -387,6 +429,10 @@ except KeyboardInterrupt:
 
 # Load the best saved model.
 model_load(args.save)
+
+params = list(model.parameters()) + list(criterion.parameters())
+total_params = sum(x.size()[0] * x.size()[1] if len(x.size()) > 1 else x.size()[0] for x in params if x.size())
+print('Model total parameters:', total_params)
 
 # Run on test data.
 test_loss = evaluate(test_data, test_batch_size)
