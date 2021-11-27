@@ -55,3 +55,27 @@ When the training slows down a second pass with a halved learning rate until val
 Most of the improvement will happen in the first few epochs of this final command.
 
 The final test bpc should be approximately 1.07 for the full 4 layer SHA-LSTM or 1.08 for the single headed 4 layer SHA-LSTM.
+
+### Running on jupyter notebook/Google colab
+
+To install Nvidia's [AMP](https://github.com/NVIDIA/apex) for mixed precision:
+
+```
+%%writefile setup.sh
+git clone https://github.com/NVIDIA/apex
+pip install -v --no-cache-dir --global-option="--cpp_ext" --global-option="--cuda_ext" ./apex
+
+!sh setup.sh
+```
+
+To install the minimum trust variant of LAMB:
+
+```
+%%writefile lamb.sh
+git clone https://github.com/Smerity/pytorch-lamb
+pip install -v --no-cache-dir ./pytorch-lamb
+
+!sh lamb.sh
+```
+
+The training commands in the `Training` section are intended to be run as terminal commands. When running them be sure to include a `!` at the beginning.
